@@ -1,122 +1,131 @@
-# Rearc Data Quest: Databricks Edition
+# Rearc Data Quest — Databricks Edition
 
-## Q. What is this quest?
+BLS productivity time-series + DataUSA population, landed in a Unity Catalog
+Volume and modeled as a Lakeflow (Spark) Declarative Pipeline: Bronze → Silver
+→ Gold, with data-quality expectations, a Spark SQL primary implementation and
+a PySpark alternate for all three analytical questions, and an automated check
+that the two agree.
 
-It's a hands-on way to assess your data engineering skills on the same platform we
-use for our clients every day: **Databricks**. It's also a representative sample
-of the work we do at Rearc: pulling real, imperfect data from the outside world
-and turning it into something trustworthy.
+See **`PROCESS.md`** for the architecture rationale, trade-offs, and
+retrospective, and the **AI usage disclosure** at the bottom of it.
 
-## Q. What skills should I have?
+## Before you run this
 
-- Python proficiency
-- Sourcing data programmatically from real-world APIs/websites, including
-  handling access restrictions, rate limits, or bot-blocking gracefully
-- SQL and Apache Spark, comfortable in **both** Spark SQL and the PySpark
-  DataFrame API
-- Databricks fundamentals: Delta Lake, Unity Catalog (or Hive Metastore), Volumes,
-  Spark Declarative Pipelines
-- Judgment around data quality: typing, nulls, deduplication, idempotency
-- The habit of actually reading a data provider's own documentation instead of
-  assuming a raw file is self-explanatory
+1. **Fill in real contact info for the BLS `User-Agent`.** BLS returns `403
+   Forbidden` to requests it can't attribute to an owner
+   (https://www.bls.gov/bls/pss.htm) — set `RDQ_CONTACT_NAME` /
+   `RDQ_CONTACT_EMAIL` as job parameters (see `resources/ingestion_job.yml`)
+   or edit the defaults in `ingestion/common.py`.
+2. Confirm you have somewhere to create a catalog/schema (Databricks Free
+   Edition works — see `setup/00_setup_catalog_schema_volume.py` for the
+   fallback if you can't `CREATE CATALOG`).
 
-You'll need access to a Databricks environment. [Free Edition](https://www.databricks.com/learn/free-edition)
-works fine if you don't already have one.
+## Environment
 
-## Q. What do I have to do?
+This repo is wired up for one catalog, `rearc_dev_001`, split into three
+schemas — one per medallion layer — plus a schema for the raw-file Volume:
 
-**Step 1: Source it.** Pull the full contents of [this BLS productivity
-time-series folder](https://download.bls.gov/pub/time.series/pr/), not just the
-data file, and land everything as raw files in a Databricks **Volume**.
-You'll likely hit a `403 Forbidden` at some point; see the Q&A below for how to
-resolve this the way BLS actually wants you to.
+| Layer  | Location                                       |
+|--------|-------------------------------------------------|
+| Bronze | `rearc_dev_001.bronze`                          |
+| Silver | `rearc_dev_001.silver`                          |
+| Gold   | `rearc_dev_001.gold`                            |
+| Raw    | `/Volumes/rearc_dev_001/volumes/bls_gov`        |
 
-Don't hardcode filenames or assume a one-time pull. If we re-run your ingestion
-after the source has added, changed, or removed data, it should still work
-correctly and shouldn't reprocess anything it's already ingested.
+Bronze/Silver/Gold are separate schemas (not three sets of prefixed tables in
+one schema) specifically so Gold can get its own schema-level read-only
+grant — see `resources/grants_readonly_analyst.sql`. If you're using
+different names, override them via the Asset Bundle variables in
+`databricks.yml` (`catalog`, `bronze_schema`, `silver_schema`, `gold_schema`,
+`volume_schema`, `volume_name`), or the matching `RDQ_*` env vars / job
+parameters if running outside the bundle — see `ingestion/common.py`.
 
-You'll also need [this population API](https://honolulu-api.datausa.io/tesseract/data.jsonrecords?cube=acs_yg_total_population_1&drilldowns=Year%2CNation&locale=en&measures=Population)
-([docs](https://datausa.io/about/api/)), saved as JSON in the same Volume.
+## Repo layout
 
-**Step 2: Model it as a Spark Declarative Pipeline.** Build your Bronze, Silver,
-and Gold tables as a Spark Declarative Pipeline, with expectations enforcing
-basic data quality on the way in (expected schema, non-null keys). For each of
-the three analytical questions below, implement the logic **once in Spark SQL
-and once in PySpark**: pick whichever you prefer as the "primary" version
-feeding the Gold table, and include the other as a documented alternative. We
-want to see you're equally fluent in both, not that you can do it one way.
+```
+ingestion/
+  common.py               shared config (catalog/schema/volume names, BLS User-Agent)
+  bls_ingest.py            scrapes download.bls.gov/pub/time.series/pr/, lands raw files idempotently
+  population_ingest.py     pulls the DataUSA population API, lands raw JSON
+setup/
+  00_setup_catalog_schema_volume.py   one-time UC setup (idempotent)
+pipeline/
+  01_bronze.py              Auto Loader streaming tables, one per BLS/population source file
+  02_silver.py              typed/cleaned/deduped, + human-readable series labels
+  03_gold_sql.sql           PRIMARY: all 3 analytical questions in Spark SQL
+  03_gold_pyspark_alt.py    ALTERNATE: same 3 questions in PySpark DataFrame API
+  04_gold_verification.py   diffs primary vs. alternate; fails the pipeline if they disagree
+resources/
+  ingestion_job.yml         Databricks Job: setup -> ingest BLS + population -> run pipeline
+  pipeline.yml              the Declarative Pipeline definition
+  grants_readonly_analyst.sql   bonus: UC grants for a read-only analyst on Gold only
+databricks.yml              Asset Bundle entrypoint (bonus: deploy without clicking through the UI)
+tests/                       pytest suite for the ingestion logic that doesn't need a cluster
+PROCESS.md                   architecture, trade-offs, retrospective, AI usage disclosure
+```
 
-## Q. How do I know I've solved it?
+## Running it
 
-Your Gold tables should correctly answer:
+### Option A — Databricks Asset Bundles (recommended)
 
-1. What are the mean and standard deviation of the annual US population across
-   2013-2018 inclusive?
-2. For every `series_id` in the BLS data, what's the **best year**, meaning the
-   year with the largest sum of `value` across all its quarters? (e.g. if
-   `PRS30006011` has values 1, 2 in 1995 and 3, 4 in 1996, its best year is 1996
-   with a summed value of 7.) Include enough of a human-readable label for each
-   series that someone unfamiliar with BLS series codes could understand at a
-   glance what's actually being measured.
-3. For `series_id = PRS30006032` and `period = Q01`, what was the `value` each
-   year, joined with that year's `population` where available?
+```bash
+databricks configure                 # if you haven't already
+databricks bundle validate -t dev
+databricks bundle deploy -t dev
+databricks bundle run -t dev bls_ingestion_job   # lands raw data, then runs the pipeline
+```
 
-## Q. What do I have to submit?
+Set `catalog` / `bronze_schema` / `silver_schema` / `gold_schema` /
+`volume_schema` / `volume_name` / `contact_name` / `contact_email` either in
+`databricks.yml`'s `variables` block or with `--var`, e.g.:
 
-1. **Your code**, as a link to a public (or shareable) git repository, including
-   whatever you used to source and land the data.
-2. **Your thought process (`PROCESS.md`)**, covering:
-   - **Architecture**: why you modeled it this way (Bronze/Silver/Gold choices,
-     why SQL vs. PySpark where you chose one as primary, how you handled
-     re-running ingestion safely).
-   - **Trade-offs**: what you'd handle differently for a real client, such as
-     schema drift, data volume, cost, access control, or monitoring.
-   - **Retrospective**: what was hardest to get right.
-3. A screenshot of your tables/pipeline in Databricks, since we may not be able
-   to access your live workspace when we review.
+```bash
+databricks bundle deploy -t dev \
+  --var="contact_name=Beth,contact_email=you@example.com"
+```
 
-## Bonus
+### Option B — click through the UI
 
-If you're having fun and don't want to stop, here are some directions to take
-this further. Take as many as you like, we're genuinely curious how far you'll
-run with it:
+1. Import this repo as a Databricks Repo (or Git folder).
+2. Run `setup/00_setup_catalog_schema_volume.py` once.
+3. Run `ingestion/bls_ingest.py`, then `ingestion/population_ingest.py`
+   (either as ad-hoc notebook runs, or wire them into a Job — see
+   `resources/ingestion_job.yml` for the shape).
+4. Create a Lakeflow Declarative Pipeline pointing at the `pipeline/` folder
+   (all 5 files as source code), catalog `rearc_dev_001` matching what you
+   used in step 2, and set the `rdq.*` pipeline configuration values (see
+   `resources/pipeline.yml` for the exact keys) if you didn't use the default
+   schema names. Start an update.
+5. Re-running steps 3–4 is safe — unchanged BLS files aren't re-downloaded,
+   and Auto Loader won't reprocess files it's already ingested.
 
-- Build a **Genie space** or a dashboard on top of your Gold layer that a
-  non-technical stakeholder could actually use to answer questions themselves.
-- Add Unity Catalog access controls appropriate for a read-only analyst
-  consuming the Gold layer.
-- Deploy it with **Databricks Asset Bundles** instead of clicking through the UI.
-- Anything else you think would make this a better, more production-ready
-  product: surprise us.
+## Checking the answers
 
-## Misc
+Once the pipeline has run, the three Gold tables answer the quest's
+questions directly:
 
-**Q: How long should this take?**
-Steps 1 and 2 are the core ask, and are very achievable in an afternoon. Bonus is
-open-ended by design, so go as far as you want. If you're enjoying it, we'd rather
-see an ambitious, polished result than a quick, minimal one. Treat this as a
-chance to show us what you're capable of building, not just what's required.
+```sql
+SELECT * FROM rearc_dev_001.gold.gold_population_stats;
+SELECT * FROM rearc_dev_001.gold.gold_bls_best_year_per_series ORDER BY series_id;
+SELECT * FROM rearc_dev_001.gold.gold_prs30006032_q01_population ORDER BY year;
+```
 
-**Q: How do I get around the 403 error fetching BLS data?**
-*Hint 1:* BLS's data access policy is [here](https://www.bls.gov/bls/pss.htm).
-*Hint 2:* The policy notes BLS "reserves the right to block robots that do not
-contain information that can be used to contact the owner." How could you add
-contact info to your programmatic requests?
-*Hint 3:* A `User-Agent` header with your contact info resolves this and keeps
-you compliant with BLS's policy.
+`gold_verification_q1/q2/q3` each report a `diff_row_count` — should always be
+`0`, confirming the SQL-primary and PySpark-alternate implementations agree.
 
-**Q: Can I use AI to assist me?**
-We (obviously) love AI, and you absolutely may use it as a reference tool.
-However:
-1. You must understand every line of code you submit; we'll ask you to explain
-   your logic in the interview.
-2. Please be open about usage. Tell us something like: "I used Claude to draft
-   the pipeline scaffold, but had to fix the expectations logic myself."
+## Local tests
 
-**Q: Do I have to use specific tools?**
-Beyond developing in Databricks and building your pipeline as a Spark Declarative
-Pipeline, use whichever packages or approach you like, we're as interested in
-what you choose and why as in the result.
+The ingestion logic that has real branching to get wrong (which links in the
+BLS directory listing count as files, which files need re-pulling, how the
+population API response is validated) is unit-tested without needing a
+cluster:
 
-**Q: Can I share this quest with others?**
-No.
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+## Screenshot
+
+`screenshots/` is where the required screenshot of the running
+pipeline/tables goes before submitting — see `screenshots/README.md`.
