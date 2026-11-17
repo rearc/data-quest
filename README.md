@@ -15,15 +15,20 @@ and turning it into something trustworthy.
 - SQL and Apache Spark, comfortable in **both** Spark SQL and the PySpark
   DataFrame API
 - Databricks fundamentals: Delta Lake, Unity Catalog (or Hive Metastore), Volumes,
-  Spark Declarative Pipelines
+  Spark Declarative Pipelines, Declarative Automation Bundles
 - Judgment around data quality: typing, nulls, deduplication, idempotency
 - The habit of actually reading a data provider's own documentation instead of
   assuming a raw file is self-explanatory
 
-You'll need access to a Databricks environment. [Free Edition](https://www.databricks.com/learn/free-edition)
-works fine if you don't already have one.
+You'll need access to a Databricks Free Edition environment. [Databricks Free Edition](https://www.databricks.com/learn/free-edition)
 
 ## Q. What do I have to do?
+
+**Treat this as a new client engagement.** Imagine a new Rearc client handed you this brief. 
+Build it the way you would if they were going to run, maintain, and rely on it after 
+you've moved on. That means code their team can pick up, decisions you can defend, 
+and documentation they could follow without you in the room. Where the brief is ambiguous, 
+make the call you’d make on a real engagement and note it in `PROCESS.md`.
 
 **Step 1: Source it.** Pull the full contents of [this BLS productivity
 time-series folder](https://download.bls.gov/pub/time.series/pr/), not just the
@@ -45,6 +50,10 @@ the three analytical questions below, implement the logic **once in Spark SQL
 and once in PySpark**: pick whichever you prefer as the "primary" version
 feeding the Gold table, and include the other as a documented alternative. We
 want to see you're equally fluent in both, not that you can do it one way.
+
+**Step 3: Make it deployable.** Show us how the client's team would get this into 
+their workspace and keep it running after you're gone, whether that's something 
+you build or a design you'd propose. Explain your approach in `PROCESS.md`.
 
 ## Q. How do I know I've solved it?
 
@@ -69,8 +78,9 @@ Your Gold tables should correctly answer:
    - **Architecture**: why you modeled it this way (Bronze/Silver/Gold choices,
      why SQL vs. PySpark where you chose one as primary, how you handled
      re-running ingestion safely).
-   - **Trade-offs**: what you'd handle differently for a real client, such as
-     schema drift, data volume, cost, access control, or monitoring.
+   - **Trade-offs**: what you'd handle differently or add next before this went
+     to production for that client, such as schema drift, data volume, cost,
+     access control, or monitoring.
    - **AI usage**: where and how you used AI (drafting code, debugging,
      explaining a concept, etc.), and how you validated or corrected its output.
      We encourage using AI as part of your workflow here, same as you would on
@@ -90,7 +100,10 @@ run with it:
   non-technical stakeholder could actually use to answer questions themselves.
 - Add Unity Catalog access controls appropriate for a read-only analyst
   consuming the Gold layer.
-- Deploy it with **Databricks Asset Bundles** instead of clicking through the UI.
+- Automate deployment end to end: a CI/CD workflow that validates and deploys
+  your code to each environment, with appropriate run identities and
+  checks before anything reaches prod. Screenshots of your successful deployments
+  can be added to show completion.
 - Anything else you think would make this a better, more production-ready
   product: surprise us.
 
